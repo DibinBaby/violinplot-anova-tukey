@@ -1,10 +1,7 @@
 #!/usr/bin/env Rscript
 # anova_violinplots.R
-# Place this script in your project root, with an "input" folder containing .xlsx files.
-# Run via:
-#   Rscript anova_violinplots.R
 
-# Ensure required packages are installed
+# Install required packages if missing
 packages <- c("readxl","dplyr","ggplot2","multcompView","tidyr","tibble","tools")
 install_if_missing <- function(p) {
   if (!requireNamespace(p, quietly = TRUE)) {
@@ -29,7 +26,7 @@ colors <- c(
 )
 # -------------------------------
 
-# Setup directories
+# Setup folders
 input_dir  <- "input"
 output_dir <- "output"
 if (!dir.exists(input_dir))  stop(sprintf("Input folder '%s' not found.", input_dir))
@@ -40,39 +37,45 @@ files <- list.files(path = input_dir, pattern = "\\.xlsx$", ignore.case = TRUE)
 if (!length(files)) stop("No .xlsx files found in 'input' folder.")
 
 process_file <- function(fname) {
-  # full paths
   infile  <- file.path(input_dir, fname)
   outfile <- file.path(output_dir, paste0(file_path_sans_ext(fname), "_violinplot.tiff"))
   
   df <- read_excel(infile) %>% setNames(tolower(names(.)))
-  # require genotype & value
+  
+  # Must have genotype and value
   if (!("genotype" %in% names(df)) || !("value" %in% names(df))) {
     warning(sprintf("Skipping '%s': missing 'genotype' or 'value'.", fname)); return()
   }
-  # dummy treatment if missing
+  
+  # Create dummy treatment if missing
   if (!("treatment" %in% names(df))) df$treatment <- "all"
   
-  # preserve input order and types
+  # Clean and factorize
   df <- df %>% mutate(
-    genotype  = factor(genotype, levels = unique(genotype)),
-    treatment = factor(treatment, levels = unique(treatment)),
+    genotype  = factor(genotype),
+    treatment = factor(treatment),
     value     = as.numeric(value)
   )
   
-  # detect treatment
+  # Determine if multiple treatments exist
   has_tr <- nlevels(df$treatment) > 1
+  
+  # Define plotting group and custom order
   if (has_tr) {
-    df <- df %>% mutate(
-      group = factor(paste(genotype, treatment, sep = ":"),
-                     levels = unique(paste(genotype, treatment, sep = ":")))
-    )
+    df <- df %>% mutate(group = paste(genotype, treatment, sep = ":"))
+    df$group <- factor(df$group, levels = c(
+      "WT:Fe", "WT:noFe",
+      "4A:Fe", "4A:noFe",
+      "4B:Fe", "4B:noFe"
+    ))
     xlab <- "Genotype:Treatment"
   } else {
     df <- df %>% mutate(group = genotype)
+    df$group <- factor(df$group, levels = c("WT", "4A", "4B"))
     xlab <- "Genotype"
   }
   
-  # ANOVA and Tukey
+  # Run ANOVA and Tukey HSD
   if (has_tr) {
     fit   <- aov(value ~ genotype * treatment, data = df)
     tuk   <- TukeyHSD(fit, "genotype:treatment")
@@ -83,7 +86,7 @@ process_file <- function(fname) {
     pvals <- tuk$genotype[, "p adj"]
   }
   
-  # compact letters
+  # Compact letters
   cl <- multcompLetters(pvals)$Letters
   letter_df <- tibble(group = names(cl), label = cl) %>%
     left_join(
@@ -91,24 +94,21 @@ process_file <- function(fname) {
       by = "group"
     )
   
-  # build palettes
+  # Fill color setup
   geno_lv <- levels(df$genotype)
   tr_lv   <- levels(df$treatment)
   geno_pal <- setNames(colors[seq_along(geno_lv)], geno_lv)
   tr_pal   <- setNames(colors[seq_along(tr_lv)], tr_lv)
   
-  # define fill column and values
   if (has_tr) {
-    fill_col   <- df$treatment
-    fill_vals  <- tr_pal
-    df$fill    <- factor(as.character(df$treatment), levels = names(tr_pal))
+    df$fill <- factor(as.character(df$treatment), levels = names(tr_pal))
+    fill_vals <- tr_pal
   } else {
-    fill_col   <- df$genotype
-    fill_vals  <- geno_pal
-    df$fill    <- factor(as.character(df$genotype), levels = names(geno_pal))
+    df$fill <- factor(as.character(df$genotype), levels = names(geno_pal))
+    fill_vals <- geno_pal
   }
   
-  # plot
+  # Plot
   p <- ggplot(df, aes(x = group, y = value, fill = fill)) +
     geom_violin(trim = FALSE, scale = "width", alpha = 0.6, color = NA) +
     geom_boxplot(width = 0.2, outlier.shape = NA, alpha = 0.8, color = "gray20") +
@@ -124,10 +124,10 @@ process_file <- function(fname) {
     geom_text(data = letter_df, aes(x = group, y = y, label = label),
               inherit.aes = FALSE, size = 5, vjust = 0)
   
-  # save
+  # Save TIFF
   ggsave(outfile, plot = p, device = "tiff", dpi = 600,
          width = max(6, nlevels(df$group) * 0.5 + 4), height = 5, units = "in")
 }
 
-# run on all
+# Run for all input files
 invisible(lapply(files, process_file))
